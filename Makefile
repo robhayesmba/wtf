@@ -13,3 +13,8 @@ remove-theme:
 	@rm http/assets/css/theme.css
 
 .PHONY: default generate clean remove-theme
+
+clean-docker:
+	docker container rm scripts_flyway_1
+	docker container rm wtf-postgres
+	docker volume rm scripts_wtf-volume

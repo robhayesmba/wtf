@@ -11,7 +11,7 @@ import (
 // All members can view all other member's values in the dial. However, only the
 // membership owner can edit the membership value.
 type DialMembership struct {
-	ID int `json:"id"`
+	ID int `json:"id" gorm:"primarykey"`
 
 	// Parent dial. This dial's WTF level updates when a membership updates.
 	DialID int   `json:"dialID"`
@@ -26,8 +26,8 @@ type DialMembership struct {
 	Value int `json:"value"`
 
 	// Timestamps for membership creation & last update.
-	CreatedAt time.Time `json:"createdAt"`
-	UpdatedAt time.Time `json:"updatedAt"`
+	CreatedAt time.Time `json:"createdAt" gorm:"type:time"`
+	UpdatedAt time.Time `json:"updatedAt" gorm:"type:time"`
 }
 
 // CanEditDialMembership returns true if the current user can edit membership.

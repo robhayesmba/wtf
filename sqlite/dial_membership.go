@@ -3,14 +3,33 @@ package sqlite
 import (
 	"context"
 	"fmt"
-	"strings"
-
 	"github.com/benbjohnson/wtf"
+	"strings"
+	"time"
 )
 
 // DialMembershipService represents a service for managing dial memberships in SQLite.
 type DialMembershipService struct {
 	db *DB
+}
+
+type SqliteDialMembership struct {
+	ID int `json:"id"`
+
+	DialID int       `json:"dialID"`
+	Dial   *wtf.Dial `json:"dial"`
+
+	// Owner of the membership. Only this user can update the membership.
+	UserID int       `json:"userID"`
+	User   *wtf.User `json:"user"`
+
+	// Current WTF level for the user for this dial.
+	// Updating this value will cause the parent dial's WTF level to be recomputed.
+	Value int `json:"value"`
+
+	// Timestamps for membership creation & last update.
+	CreatedAt string `json:"createdAt"`
+	UpdatedAt string `json:"updatedAt"`
 }
 
 // NewDialMembershipService returns a new instance of DialMembershipService.
@@ -26,7 +45,7 @@ func (s *DialMembershipService) FindDialMembershipByID(ctx context.Context, id i
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback()
+	defer tx.Tx.Rollback()
 
 	// Fetch membership object by ID and attach associated user & dial.
 	membership, err := findDialMembershipByID(ctx, tx, id)
@@ -48,7 +67,7 @@ func (s *DialMembershipService) FindDialMemberships(ctx context.Context, filter 
 	if err != nil {
 		return nil, 0, err
 	}
-	defer tx.Rollback()
+	defer tx.Tx.Rollback()
 
 	// Fetch a list of matching membership objects.
 	memberships, n, err := findDialMemberships(ctx, tx, filter)
@@ -73,7 +92,7 @@ func (s *DialMembershipService) CreateDialMembership(ctx context.Context, member
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer tx.Tx.Rollback()
 
 	// Ensure user is logged in & assign membership to current user.
 	userID := wtf.UserIDFromContext(ctx)
@@ -88,7 +107,7 @@ func (s *DialMembershipService) CreateDialMembership(ctx context.Context, member
 	} else if err := attachDialMembershipAssociations(ctx, tx, membership); err != nil {
 		return err
 	}
-	return tx.Commit()
+	return tx.Tx.Commit().Error
 }
 
 // UpdateDialMembership updates the value of a membership. Only the owner of
@@ -99,7 +118,7 @@ func (s *DialMembershipService) UpdateDialMembership(ctx context.Context, id int
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback()
+	defer tx.Tx.Rollback()
 
 	// Update a membership and attach associated user & dial to returned data.
 	membership, err := updateDialMembership(ctx, tx, id, upd)
@@ -108,7 +127,7 @@ func (s *DialMembershipService) UpdateDialMembership(ctx context.Context, id int
 	} else if err := attachDialMembershipAssociations(ctx, tx, membership); err != nil {
 		return membership, err
 	}
-	return membership, tx.Commit()
+	return membership, tx.Tx.Commit().Error
 }
 
 // DeleteDialMembership permanently deletes a membership by ID. Only the
@@ -118,12 +137,12 @@ func (s *DialMembershipService) DeleteDialMembership(ctx context.Context, id int
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer tx.Tx.Rollback()
 
 	if err := deleteDialMembership(ctx, tx, id); err != nil {
 		return err
 	}
-	return tx.Commit()
+	return tx.Tx.Commit().Error
 }
 
 // findDialMembershipByID returns a membership object by ID.
@@ -171,8 +190,12 @@ func findDialMemberships(ctx context.Context, tx *Tx, filter wtf.DialMembershipF
 		args = append(args, userID)
 	}
 
-	// Query for all matching membership rows.
-	rows, err := tx.QueryContext(ctx, `
+	if tx.db.DBType == "sqlite" {
+		var membershipsRead []*SqliteDialMembership
+
+		// Query for all matching membership rows.
+		//	rows, err := tx.QueryContext(ctx,
+		results := tx.Tx.Raw(`
 		SELECT 
 		    dm.id,
 		    dm.dial_id,
@@ -188,46 +211,91 @@ func findDialMemberships(ctx context.Context, tx *Tx, filter wtf.DialMembershipF
 		WHERE `+strings.Join(where, " AND ")+`
 		ORDER BY `+sortBy+`
 		`+FormatLimitOffset(filter.Limit, filter.Offset),
-		args...,
-	)
-	if err != nil {
-		return nil, n, FormatError(err)
-	}
-	defer rows.Close()
+			args...,
+		).Scan(&membershipsRead)
+		//if err != nil {
+		//	return nil, n, FormatError(err)
+		//}
+		//defer rows.Close()
 
-	// Iterate over rows and deserialized into DialMembership objects.
-	memberships := make([]*wtf.DialMembership, 0)
-	for rows.Next() {
-		var dialUserID int
-		var membership wtf.DialMembership
-		if rows.Scan(
-			&membership.ID,
-			&membership.DialID,
-			&membership.UserID,
-			&membership.Value,
-			(*NullTime)(&membership.CreatedAt),
-			(*NullTime)(&membership.UpdatedAt),
-			&dialUserID,
-			&n,
-		); err != nil {
-			return nil, 0, err
+		if results.Error != nil {
+			return nil, int(results.RowsAffected), FormatError(results.Error)
 		}
 
-		memberships = append(memberships, &membership)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, 0, err
+		var memberships []*wtf.DialMembership
+		count := 0
+		for _, membership := range membershipsRead {
+			m, err := mapFromDBMembership(membership)
+			if err != nil {
+				return nil, 0, FormatError(err)
+			}
+			memberships = append(memberships, m)
+			count++
+		}
+		return memberships, count, nil
+	} else {
+		var memberships []*wtf.DialMembership
+		results := tx.Tx.Raw(`
+		SELECT 
+		    dm.id,
+		    dm.dial_id,
+		    dm.user_id,
+		    dm.value,
+		    dm.created_at,
+		    dm.updated_at,
+		    d.user_id AS dial_user_id,
+		    COUNT(*) OVER()
+		FROM dial_memberships dm
+		INNER JOIN dials d ON dm.dial_id = d.id
+		INNER JOIN users u ON dm.user_id = u.id
+		WHERE `+strings.Join(where, " AND ")+`
+		ORDER BY `+sortBy+`
+		`+FormatLimitOffset(filter.Limit, filter.Offset),
+			args...,
+		).Scan(&memberships)
+
+		if results.Error != nil {
+			return nil, int(results.RowsAffected), FormatError(results.Error)
+		}
+
+		return memberships, int(results.RowsAffected), nil
 	}
 
-	return memberships, n, nil
+	// Iterate over rows and deserialized into DialMembership objects.
+	//memberships := make([]*wtf.DialMembership, 0)
+	//for rows.Next() {
+	//	var dialUserID int
+	//	var membership wtf.DialMembership
+	//	if rows.Scan(
+	//		&membership.ID,
+	//		&membership.DialID,
+	//		&membership.UserID,
+	//		&membership.Value,
+	//		(*NullTime)(&membership.CreatedAt),
+	//		(*NullTime)(&membership.UpdatedAt),
+	//		&dialUserID,
+	//		&n,
+	//	); err != nil {
+	//		return nil, 0, err
+	//	}
+	//
+	//	memberships = append(memberships, &membership)
+	//}
+	//if err := rows.Err(); err != nil {
+	//	return nil, 0, err
+	//}
+
+	//return memberships, n, nil
 }
 
 // createDialMembership creates a new membership. Assigns the new database ID
 // to membership.ID and updates the timestamps.
 func createDialMembership(ctx context.Context, tx *Tx, membership *wtf.DialMembership) error {
 	// Update timestamps to current time.
-	membership.CreatedAt = tx.now
-	membership.UpdatedAt = membership.CreatedAt
+	if tx.db.DBType == "sqlite" {
+		membership.CreatedAt = tx.now
+		membership.UpdatedAt = membership.CreatedAt
+	}
 
 	// Perform basic field validation.
 	if err := membership.Validate(); err != nil {
@@ -246,31 +314,46 @@ func createDialMembership(ctx context.Context, tx *Tx, membership *wtf.DialMembe
 		return err
 	}
 
-	// Execute query to insert membership.
-	result, err := tx.ExecContext(ctx, `
-		INSERT INTO dial_memberships (
-			dial_id,
-			user_id,
-			value,
-			created_at,
-			updated_at
-		)
-		VALUES (?, ?, ?, ?, ?)
-	`,
-		membership.DialID,
-		membership.UserID,
-		membership.Value,
-		(*NullTime)(&membership.CreatedAt),
-		(*NullTime)(&membership.UpdatedAt),
-	)
-	if err != nil {
-		return FormatError(err)
+	if tx.db.DBType == "sqlite" {
+		crMembership := mapToDBMembership(membership)
+		result := tx.Tx.Table("dial_memberships").Create(&crMembership)
+
+		if result.Error != nil {
+			return FormatError(result.Error)
+		}
+		membership.ID = crMembership.ID
+	} else {
+		result := tx.Tx.Create(&membership)
+		if result.Error != nil {
+			return FormatError(result.Error)
+		}
 	}
 
-	// Assign new database ID to the caller's arg.
-	if membership.ID, err = lastInsertID(result); err != nil {
-		return err
-	}
+	// Execute query to insert membership.
+	//result, err := tx.ExecContext(ctx, `
+	//	INSERT INTO dial_memberships (
+	//		dial_id,
+	//		user_id,
+	//		value,
+	//		created_at,
+	//		updated_at
+	//	)
+	//	VALUES (?, ?, ?, ?, ?)
+	//`,
+	//	membership.DialID,
+	//	membership.UserID,
+	//	membership.Value,
+	//	(*NullTime)(&membership.CreatedAt),
+	//	(*NullTime)(&membership.UpdatedAt),
+	//)
+	//if err != nil {
+	//	return FormatError(err)
+	//}
+	//
+	//// Assign new database ID to the caller's arg.
+	//if membership.ID, err = lastInsertID(result); err != nil {
+	//	return err
+	//}
 
 	// Ensure computed parent dial value is up to date.
 	if err := refreshDialValue(ctx, tx, membership.DialID); err != nil {
@@ -304,27 +387,41 @@ func updateDialMembership(ctx context.Context, tx *Tx, id int, upd wtf.DialMembe
 		return membership, nil
 	}
 
-	// Set last updated date to current time.
-	membership.UpdatedAt = tx.now
+	if tx.db.DBType == "sqlite" {
+		// Set last updated date to current time.
+		membership.UpdatedAt = tx.now
+	}
 
 	// Perform basic field validation.
 	if err := membership.Validate(); err != nil {
 		return membership, err
 	}
 
-	// Execute query to update membership value.
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE dial_memberships
-		SET value = ?,
-		    updated_at = ?
-		WHERE id = ?
-	`,
-		membership.Value,
-		(*NullTime)(&membership.UpdatedAt),
-		id,
-	); err != nil {
-		return membership, FormatError(err)
+	if tx.db.DBType == "sqlite" {
+		upMembership := mapToDBMembership(membership)
+		result := tx.Tx.Table("dial_memberships").Updates(&upMembership)
+		if result.Error != nil {
+			return membership, FormatError(result.Error)
+		}
+	} else {
+		result := tx.Tx.Updates(&membership)
+		if result.Error != nil {
+			return membership, FormatError(result.Error)
+		}
 	}
+	// Execute query to update membership value.
+	//if _, err := tx.ExecContext(ctx, `
+	//	UPDATE dial_memberships
+	//	SET value = ?,
+	//	    updated_at = ?
+	//	WHERE id = ?
+	//`,
+	//	membership.Value,
+	//	(*NullTime)(&membership.UpdatedAt),
+	//	id,
+	//); err != nil {
+	//	return membership, FormatError(err)
+	//}
 
 	// Ensure computed dial value is up to date.
 	if err := refreshDialValue(ctx, tx, membership.DialID); err != nil {
@@ -368,10 +465,14 @@ func deleteDialMembership(ctx context.Context, tx *Tx, id int) error {
 		return wtf.Errorf(wtf.ECONFLICT, "Dial owner may not delete their own membership.")
 	}
 
-	// Remove row from database.
-	if _, err := tx.ExecContext(ctx, `DELETE FROM dial_memberships WHERE id = ?`, id); err != nil {
-		return FormatError(err)
+	result := tx.Tx.Delete(&wtf.DialMembership{}, id)
+	if result.Error != nil {
+		return FormatError(result.Error)
 	}
+	// Remove row from database.
+	//if _, err := tx.ExecContext(ctx, `DELETE FROM dial_memberships WHERE id = ?`, id); err != nil {
+	//	return FormatError(err)
+	//}
 
 	// Ensure computed dial value is up to date.
 	if err := refreshDialValue(ctx, tx, membership.DialID); err != nil {
@@ -387,4 +488,40 @@ func attachDialMembershipAssociations(ctx context.Context, tx *Tx, membership *w
 		return fmt.Errorf("attach membership user: %w", err)
 	}
 	return nil
+}
+
+func mapFromDBMembership(membership *SqliteDialMembership) (*wtf.DialMembership, error) {
+	var m wtf.DialMembership
+	m.ID = membership.ID
+	m.Value = membership.Value
+	m.UserID = membership.UserID
+	m.User = membership.User
+	m.DialID = membership.DialID
+	m.Dial = membership.Dial
+	ct, err := time.Parse(TimeLayout, membership.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	m.CreatedAt = ct.UTC().Truncate(time.Second)
+	ut, err := time.Parse(TimeLayout, membership.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	m.UpdatedAt = ut.UTC().Truncate(time.Second)
+
+	return &m, nil
+}
+
+func mapToDBMembership(membership *wtf.DialMembership) *SqliteDialMembership {
+	var m SqliteDialMembership
+	m.ID = membership.ID
+	m.Value = membership.Value
+	m.UserID = membership.UserID
+	m.User = membership.User
+	m.DialID = membership.DialID
+	m.Dial = membership.Dial
+	m.CreatedAt = membership.CreatedAt.Format(TimeLayout)
+	m.UpdatedAt = membership.UpdatedAt.Format(TimeLayout)
+
+	return &m
 }

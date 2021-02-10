@@ -20,7 +20,7 @@ const (
 // by email address. It's a moot point, however, as we only support GitHub as
 // an OAuth provider.
 type Auth struct {
-	ID int `json:"id"`
+	ID int `json:"id"  gorm:<-:false;primaryKey`
 
 	// User can have one or more methods of authentication.
 	// However, only one per source is allowed per user.
@@ -36,11 +36,11 @@ type Auth struct {
 	// GitHub does not use refresh tokens but the field exists for future providers.
 	AccessToken  string     `json:"-"`
 	RefreshToken string     `json:"-"`
-	Expiry       *time.Time `json:"-"`
+	Expiry       *time.Time `json:"-" gorm:"type:time"`
 
 	// Timestamps of creation & last update.
-	CreatedAt time.Time `json:"createdAt"`
-	UpdatedAt time.Time `json:"updatedAt"`
+	CreatedAt time.Time `json:"createdAt" gorm:"type:time"`
+	UpdatedAt time.Time `json:"updatedAt" gorm:"type:time"`
 }
 
 // Validate returns an error if any fields are invalid on the Auth object.

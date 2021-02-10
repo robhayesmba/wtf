@@ -33,7 +33,7 @@ func MustOpenDB(tb testing.TB) *sqlite.DB {
 		println("DUMP=" + dsn)
 	}
 
-	db := sqlite.NewDB(dsn)
+	db := sqlite.NewDB(dsn, "sqlite")
 	if err := db.Open(); err != nil {
 		tb.Fatal(err)
 	}

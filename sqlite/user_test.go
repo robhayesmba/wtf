@@ -99,8 +99,8 @@ func TestUserService_UpdateUser(t *testing.T) {
 		db := MustOpenDB(t)
 		defer MustCloseDB(t, db)
 		s := sqlite.NewUserService(db)
-		user0, _ := MustCreateUser(t, context.Background(), db, &wtf.User{Name: "NAME0"})
-		_, ctx1 := MustCreateUser(t, context.Background(), db, &wtf.User{Name: "NAME1"})
+		user0, _ := MustCreateUser(t, context.Background(), db, &wtf.User{Name: "NAME0", Email: "name0@e.co"})
+		_, ctx1 := MustCreateUser(t, context.Background(), db, &wtf.User{Name: "NAME1", Email: "name1@e.co"})
 
 		// Update user as another user.
 		newName := "NEWNAME"
@@ -143,8 +143,8 @@ func TestUserService_DeleteUser(t *testing.T) {
 		db := MustOpenDB(t)
 		defer MustCloseDB(t, db)
 		s := sqlite.NewUserService(db)
-		user0, _ := MustCreateUser(t, context.Background(), db, &wtf.User{Name: "NAME0"})
-		_, ctx1 := MustCreateUser(t, context.Background(), db, &wtf.User{Name: "NAME1"})
+		user0, _ := MustCreateUser(t, context.Background(), db, &wtf.User{Name: "NAME0", Email: "name0@e.co"})
+		_, ctx1 := MustCreateUser(t, context.Background(), db, &wtf.User{Name: "NAME1", Email: "name1@e.co"})
 
 		if err := s.DeleteUser(ctx1, user0.ID); err == nil {
 			t.Fatal("expected error")

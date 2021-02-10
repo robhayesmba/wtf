@@ -14,9 +14,12 @@ import (
 	"time"
 
 	"github.com/benbjohnson/wtf"
-	_ "github.com/mattn/go-sqlite3"
+	//	_ "github.com/mattn/go-sqlite3"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
+	"gorm.io/driver/postgres"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
 )
 
 // Database metrics.
@@ -37,17 +40,21 @@ var (
 	})
 )
 
+const TimeLayout = "2006-01-02 15:04:05-07:00"
+
 //go:embed migration/*.sql
 var migrationFS embed.FS
 
 // DB represents the database connection.
 type DB struct {
-	db     *sql.DB
+	//db     *sql.DB
+	db     *gorm.DB
 	ctx    context.Context // background context
 	cancel func()          // cancel background context
 
 	// Datasource name.
-	DSN string
+	DSN    string
+	DBType string
 
 	// Destination for events to be published.
 	EventService wtf.EventService
@@ -58,10 +65,11 @@ type DB struct {
 }
 
 // NewDB returns a new instance of DB associated with the given datasource name.
-func NewDB(dsn string) *DB {
+func NewDB(dsn string, dbType string) *DB {
 	db := &DB{
-		DSN: dsn,
-		Now: time.Now,
+		DSN:    dsn,
+		DBType: dbType,
+		Now:    time.Now,
 
 		EventService: wtf.NopEventService(),
 	}
@@ -76,34 +84,41 @@ func (db *DB) Open() (err error) {
 		return fmt.Errorf("dsn required")
 	}
 
-	// Make the parent directory unless using an in-memory db.
-	if db.DSN != ":memory:" {
-		if err := os.MkdirAll(filepath.Dir(db.DSN), 0700); err != nil {
+	if db.DBType == "sqlite" {
+		// Make the parent directory unless using an in-memory db.
+		if db.DSN != ":memory:" {
+			if err := os.MkdirAll(filepath.Dir(db.DSN), 0700); err != nil {
+				return err
+			}
+		}
+
+		// Connect to the database.
+		if db.db, err = gorm.Open(sqlite.Open(db.DSN), &gorm.Config{}); err != nil {
 			return err
 		}
-	}
 
-	// Connect to the database.
-	if db.db, err = sql.Open("sqlite3", db.DSN); err != nil {
-		return err
-	}
+		// Enable WAL. SQLite performs better with the WAL  because it allows
+		// multiple readers to operate while data is being written.
+		if result := db.db.Exec(`PRAGMA journal_mode = wal;`); result.Error != nil {
+			return fmt.Errorf("enable wal: %w", result.Error)
+		}
 
-	// Enable WAL. SQLite performs better with the WAL  because it allows
-	// multiple readers to operate while data is being written.
-	if _, err := db.db.Exec(`PRAGMA journal_mode = wal;`); err != nil {
-		return fmt.Errorf("enable wal: %w", err)
-	}
+		// Enable foreign key checks. For historical reasons, SQLite does not check
+		// foreign key constraints by default... which is kinda insane. There's some
+		// overhead on inserts to verify foreign key integrity but it's definitely
+		// worth it.
+		if result := db.db.Exec(`PRAGMA foreign_keys = ON;`); result.Error != nil {
+			return fmt.Errorf("foreign keys pragma: %w", result.Error)
+		}
 
-	// Enable foreign key checks. For historical reasons, SQLite does not check
-	// foreign key constraints by default... which is kinda insane. There's some
-	// overhead on inserts to verify foreign key integrity but it's definitely
-	// worth it.
-	if _, err := db.db.Exec(`PRAGMA foreign_keys = ON;`); err != nil {
-		return fmt.Errorf("foreign keys pragma: %w", err)
-	}
-
-	if err := db.migrate(); err != nil {
-		return fmt.Errorf("migrate: %w", err)
+		if err := db.migrate(); err != nil {
+			return fmt.Errorf("migrate: %w", err)
+		}
+	} else if db.DBType == "postgres" {
+		// Connect to the database.
+		if db.db, err = gorm.Open(postgres.Open(db.DSN), &gorm.Config{}); err != nil {
+			return err
+		}
 	}
 
 	// Monitor stats in background goroutine.
@@ -122,8 +137,8 @@ func (db *DB) Open() (err error) {
 // migrations.
 func (db *DB) migrate() error {
 	// Ensure the 'migrations' table exists so we don't duplicate migrations.
-	if _, err := db.db.Exec(`CREATE TABLE IF NOT EXISTS migrations (name TEXT PRIMARY KEY);`); err != nil {
-		return fmt.Errorf("cannot create migrations table: %w", err)
+	if result := db.db.Exec(`CREATE TABLE IF NOT EXISTS migrations (name TEXT PRIMARY KEY);`); result.Error != nil {
+		return fmt.Errorf("cannot create migrations table: %w", result.Error)
 	}
 
 	// Read migration files from our embedded file system.
@@ -146,16 +161,17 @@ func (db *DB) migrate() error {
 // migrate runs a single migration file within a transaction. On success, the
 // migration file name is saved to the "migrations" table to prevent re-running.
 func (db *DB) migrateFile(name string) error {
-	tx, err := db.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
+	tx := db.db.Begin()
+	defer func() {
+		if r := recover(); r != nil {
+			tx.Rollback()
+		}
+	}()
 
 	// Ensure migration has not already been run.
 	var n int
-	if err := tx.QueryRow(`SELECT COUNT(*) FROM migrations WHERE name = ?`, name).Scan(&n); err != nil {
-		return err
+	if err := tx.Raw(`SELECT COUNT(*) FROM migrations WHERE name = ?`, name).Scan(&n); err.Error != nil {
+		return err.Error
 	} else if n != 0 {
 		return nil // already run migration, skip
 	}
@@ -163,16 +179,16 @@ func (db *DB) migrateFile(name string) error {
 	// Read and execute migration file.
 	if buf, err := fs.ReadFile(migrationFS, name); err != nil {
 		return err
-	} else if _, err := tx.Exec(string(buf)); err != nil {
-		return err
+	} else if result := tx.Exec(string(buf)); result.Error != nil {
+		return result.Error
 	}
 
 	// Insert record into migrations to prevent re-running migration.
-	if _, err := tx.Exec(`INSERT INTO migrations (name) VALUES (?)`, name); err != nil {
-		return err
+	if result := tx.Exec(`INSERT INTO migrations (name) VALUES (?)`, name); result.Error != nil {
+		return result.Error
 	}
 
-	return tx.Commit()
+	return tx.Commit().Error
 }
 
 // Close closes the database connection.
@@ -180,9 +196,13 @@ func (db *DB) Close() error {
 	// Cancel background context.
 	db.cancel()
 
-	// Close database.
+	// Close database.  Not needed with gorm
 	if db.db != nil {
-		return db.db.Close()
+		testDB, err := db.db.DB()
+		if err != nil {
+			return FormatError(err)
+		}
+		return testDB.Close()
 	}
 	return nil
 }
@@ -191,9 +211,9 @@ func (db *DB) Close() error {
 // provides a reference to the database and a fixed timestamp at the start of
 // the transaction. The timestamp allows us to mock time during tests as well.
 func (db *DB) BeginTx(ctx context.Context, opts *sql.TxOptions) (*Tx, error) {
-	tx, err := db.db.BeginTx(ctx, opts)
-	if err != nil {
-		return nil, err
+	tx := db.db.Begin(opts)
+	if tx.Error != nil {
+		return nil, tx.Error
 	}
 
 	// Return wrapper Tx that includes the transaction start time.
@@ -224,26 +244,45 @@ func (db *DB) monitor() {
 
 // updateStats updates the metrics for the database.
 func (db *DB) updateStats(ctx context.Context) error {
+	//can't assume the database is available, need to check and open if needed.
+	if db.db == nil {
+		if err := db.Open(); err != nil {
+			return err
+		}
+	}
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer tx.Tx.Rollback()
 
-	var n int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM users;`).Scan(&n); err != nil {
-		return fmt.Errorf("user count: %w", err)
+	var n int64
+
+	userCount := tx.Tx.Table("users").Count(&n)
+	if userCount.Error != nil {
+		return fmt.Errorf("user count: %v", userCount.Error)
 	}
+	//if err := tx.Tx.Raw(`SELECT COUNT(*) FROM users;`).Scan(&n); err != nil {
+	//	return fmt.Errorf("user count: %v", err)
+	//}
 	userCountGauge.Set(float64(n))
 
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM dials;`).Scan(&n); err != nil {
-		return fmt.Errorf("dial count: %w", err)
+	dialCount := tx.Tx.Table("dials").Count(&n)
+	if dialCount.Error != nil {
+		return fmt.Errorf("dial count: %v", dialCount.Error)
 	}
+	//if err := tx.Tx.Raw(`SELECT COUNT(*) FROM dials;`).Scan(&n); err != nil {
+	//	return fmt.Errorf("dial count: %v", err)
+	//}
 	dialCountGauge.Set(float64(n))
 
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM dial_memberships;`).Scan(&n); err != nil {
-		return fmt.Errorf("dial membership count: %w", err)
+	membershipCount := tx.Tx.Table("dial_memberships").Count(&n)
+	if membershipCount.Error != nil {
+		return fmt.Errorf("dial_membership count: %v", membershipCount.Error)
 	}
+	//if err := tx.Tx.Raw(`SELECT COUNT(*) FROM dial_memberships;`).Scan(&n); err != nil {
+	//	return fmt.Errorf("dial membership count: %v", err)
+	//}
 	dialMembershipCountGauge.Set(float64(n))
 
 	return nil
@@ -251,7 +290,7 @@ func (db *DB) updateStats(ctx context.Context) error {
 
 // Tx wraps the SQL Tx object to provide a timestamp at the start of the transaction.
 type Tx struct {
-	*sql.Tx
+	Tx  *gorm.DB
 	db  *DB
 	now time.Time
 }

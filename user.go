@@ -8,7 +8,7 @@ import (
 // User represents a user in the system. Users are typically created via OAuth
 // using the AuthService but users can also be created directly for testing.
 type User struct {
-	ID int `json:"id"`
+	ID int `json:"id"  gorm:primaryKey`
 
 	// User's preferred name & email.
 	Name  string `json:"name"`
@@ -18,8 +18,8 @@ type User struct {
 	APIKey string `json:"-"`
 
 	// Timestamps for user creation & last update.
-	CreatedAt time.Time `json:"createdAt"`
-	UpdatedAt time.Time `json:"updatedAt"`
+	CreatedAt time.Time `json:"createdAt" gorm:"type:time"`
+	UpdatedAt time.Time `json:"updatedAt" gorm:"type:time"`
 
 	// List of associated OAuth authentication objects.
 	// Currently only GitHub is supported so there should only be a maximum of one.

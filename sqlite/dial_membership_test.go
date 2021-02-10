@@ -209,9 +209,9 @@ func TestDialMembershipService_FindDialMemberships(t *testing.T) {
 		s := sqlite.NewDialMembershipService(db)
 
 		ctx := context.Background()
-		_, ctx0 := MustCreateUser(t, ctx, db, &wtf.User{Name: "jane"})
-		_, ctx1 := MustCreateUser(t, ctx, db, &wtf.User{Name: "john"})
-		_, ctx2 := MustCreateUser(t, ctx, db, &wtf.User{Name: "jill"})
+		_, ctx0 := MustCreateUser(t, ctx, db, &wtf.User{Name: "jane", Email: "jane@jane.co"})
+		_, ctx1 := MustCreateUser(t, ctx, db, &wtf.User{Name: "john", Email: "john@john.co"})
+		_, ctx2 := MustCreateUser(t, ctx, db, &wtf.User{Name: "jill", Email: "jill@jill.co"})
 
 		// Dials will automatically create memberships for the owner.
 		dial0 := MustCreateDial(t, ctx0, db, &wtf.Dial{Name: "DIAL0"})
@@ -283,8 +283,8 @@ func TestDialMembershipService_FindDialMemberships(t *testing.T) {
 		s := sqlite.NewDialMembershipService(db)
 
 		ctx := context.Background()
-		_, ctx0 := MustCreateUser(t, ctx, db, &wtf.User{Name: "jane"})
-		user1, ctx1 := MustCreateUser(t, ctx, db, &wtf.User{Name: "jill"})
+		_, ctx0 := MustCreateUser(t, ctx, db, &wtf.User{Name: "jane", Email: "jane@jane.co"})
+		user1, ctx1 := MustCreateUser(t, ctx, db, &wtf.User{Name: "jill", Email: "jill@jill.co"})
 		dial0 := MustCreateDial(t, ctx0, db, &wtf.Dial{Name: "DIAL0"})
 		membership0 := MustCreateDialMembership(t, ctx1, db, &wtf.DialMembership{DialID: dial0.ID, Value: 10})
 
@@ -309,8 +309,8 @@ func TestDialMembershipService_DeleteDialMembership(t *testing.T) {
 		s := sqlite.NewDialMembershipService(db)
 
 		ctx := context.Background()
-		_, ctx0 := MustCreateUser(t, ctx, db, &wtf.User{Name: "jane"})
-		_, ctx1 := MustCreateUser(t, ctx, db, &wtf.User{Name: "jim"})
+		_, ctx0 := MustCreateUser(t, ctx, db, &wtf.User{Name: "jane", Email: "jane@jane.co"})
+		_, ctx1 := MustCreateUser(t, ctx, db, &wtf.User{Name: "jim", Email: "jim@jim.co"})
 		dial := MustCreateDial(t, ctx0, db, &wtf.Dial{Name: "DIAL"})
 		membership := MustCreateDialMembership(t, ctx1, db, &wtf.DialMembership{DialID: dial.ID, Value: 50})
 
@@ -338,8 +338,8 @@ func TestDialMembershipService_DeleteDialMembership(t *testing.T) {
 		s := sqlite.NewDialMembershipService(db)
 
 		ctx := context.Background()
-		_, ctx0 := MustCreateUser(t, ctx, db, &wtf.User{Name: "jane"})
-		_, ctx1 := MustCreateUser(t, ctx, db, &wtf.User{Name: "jim"})
+		_, ctx0 := MustCreateUser(t, ctx, db, &wtf.User{Name: "jane", Email: "jane@jane.co"})
+		_, ctx1 := MustCreateUser(t, ctx, db, &wtf.User{Name: "jim", Email: "jim@jim.co"})
 		dial := MustCreateDial(t, ctx0, db, &wtf.Dial{Name: "DIAL"})
 		membership := MustCreateDialMembership(t, ctx1, db, &wtf.DialMembership{DialID: dial.ID, Value: 50})
 
@@ -384,9 +384,9 @@ func TestDialMembershipService_DeleteDialMembership(t *testing.T) {
 		s := sqlite.NewDialMembershipService(db)
 
 		ctx := context.Background()
-		_, ctx0 := MustCreateUser(t, ctx, db, &wtf.User{Name: "jane"})
-		_, ctx1 := MustCreateUser(t, ctx, db, &wtf.User{Name: "jim"})
-		_, ctx2 := MustCreateUser(t, ctx, db, &wtf.User{Name: "bob"})
+		_, ctx0 := MustCreateUser(t, ctx, db, &wtf.User{Name: "jane", Email: "jane@jane.co"})
+		_, ctx1 := MustCreateUser(t, ctx, db, &wtf.User{Name: "jim", Email: "jim@jim.co"})
+		_, ctx2 := MustCreateUser(t, ctx, db, &wtf.User{Name: "bob", Email: "bob@bob.co"})
 		dial := MustCreateDial(t, ctx0, db, &wtf.Dial{Name: "DIAL"})
 		membership0 := MustCreateDialMembership(t, ctx1, db, &wtf.DialMembership{DialID: dial.ID, Value: 50})
 		MustCreateDialMembership(t, ctx2, db, &wtf.DialMembership{DialID: dial.ID, Value: 50})

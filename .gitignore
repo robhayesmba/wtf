@@ -2,3 +2,4 @@
 *.test
 *.ego.go
 /node_modules
+.idea

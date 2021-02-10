@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"github.com/benbjohnson/wtf/sqlite"
 	"io/ioutil"
 	"log"
 	"os"
@@ -16,7 +17,6 @@ import (
 	"github.com/benbjohnson/wtf/http"
 	"github.com/benbjohnson/wtf/http/html"
 	"github.com/benbjohnson/wtf/inmem"
-	"github.com/benbjohnson/wtf/sqlite"
 	"github.com/pelletier/go-toml"
 	"github.com/rollbar/rollbar-go"
 )
@@ -79,6 +79,9 @@ type Main struct {
 	// SQLite database used by SQLite service implementations.
 	DB *sqlite.DB
 
+	// Move to PostgreSQL
+	//DB *postgres.DB
+
 	// HTTP server for handling HTTP communication.
 	// SQLite services are attached to it before running.
 	HTTPServer *http.Server
@@ -93,7 +96,8 @@ func NewMain() *Main {
 		Config:     DefaultConfig(),
 		ConfigPath: DefaultConfigPath,
 
-		DB:         sqlite.NewDB(""),
+		DB: sqlite.NewDB("", ""),
+		//		DB:			postgres.NewDB(""),
 		HTTPServer: http.NewServer(),
 	}
 }
@@ -173,6 +177,9 @@ func (m *Main) Run(ctx context.Context) (err error) {
 	if m.DB.DSN, err = expandDSN(m.Config.DB.DSN); err != nil {
 		return fmt.Errorf("cannot expand dsn: %w", err)
 	}
+	if m.DB.DBType == "" {
+		m.DB.DBType = m.Config.DB.DBType
+	}
 	if err := m.DB.Open(); err != nil {
 		return fmt.Errorf("cannot open db: %w", err)
 	}
@@ -182,6 +189,12 @@ func (m *Main) Run(ctx context.Context) (err error) {
 	dialService := sqlite.NewDialService(m.DB)
 	dialMembershipService := sqlite.NewDialMembershipService(m.DB)
 	userService := sqlite.NewUserService(m.DB)
+
+	// Instantiate PostgreSQL-backed services
+	//authService := postgres.NewAuthService(m.DB)
+	//dialService := postgres.NewDialService(m.DB)
+	//dialMembershipService := postgres.NewDialMembershipService(m.DB)
+	//userService := postgres.NewUserService(m.DB)
 
 	// Attach user service to Main for testing.
 	m.UserService = userService
@@ -229,13 +242,15 @@ const (
 	DefaultConfigPath = "~/wtfd.conf"
 
 	// DefaultDSN is the default datasource name.
-	DefaultDSN = "~/.wtfd/db"
+	DefaultDSN    = "~/.wtfd/db"
+	DefaultDBType = "sqlite"
 )
 
 // Config represents the CLI configuration file.
 type Config struct {
 	DB struct {
-		DSN string `toml:"dsn"`
+		DSN    string `toml:"dsn"`
+		DBType string `toml:"type"`
 	} `toml:"db"`
 
 	HTTP struct {
@@ -263,6 +278,7 @@ type Config struct {
 func DefaultConfig() Config {
 	var config Config
 	config.DB.DSN = DefaultDSN
+	config.DB.DBType = DefaultDBType
 	return config
 }
 

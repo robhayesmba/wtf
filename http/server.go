@@ -459,7 +459,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	// Fetch historical average WTF values.
 	interval := time.Minute
 	end := time.Now().Truncate(interval).Add(interval)
-	start := end.Add(-1 * time.Hour)
+	start := end.Add(-24 * time.Hour)
 	if tmpl.AverageDialValueReport, err = s.DialService.AverageDialValueReport(r.Context(), start, end, interval); err != nil {
 		Error(w, r, err)
 		return

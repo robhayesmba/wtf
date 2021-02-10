@@ -20,7 +20,7 @@ func TestCreateDial(t *testing.T) {
 	defer MustCloseMain(t, m)
 
 	// Generate a user directly in the database and attach the user to the context.
-	_, ctx0 := MustCreateUser(t, m, &wtf.User{Name: "USER0"})
+	_, ctx0 := MustCreateUser(t, m, &wtf.User{Name: "USER0", Email: "user0@user.co"})
 	ctx0, cancel := chromedp.NewContext(ctx0, chromedp.WithLogf(log.Printf))
 	defer cancel()
 

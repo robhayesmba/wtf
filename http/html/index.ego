@@ -21,9 +21,9 @@ func (tmpl *IndexTemplate) Render(ctx context.Context, w io.Writer) {
 %><ego:App>
 	<div class="content">
 		<div class="card mb-3 h-100 bg-line-chart-gradient">
-			<div class="card-body rounded-lg text-white fs--1">
-				<h4 class="text-white mb-0">Average WTF Level</h4>
-				<p class="text-white font-weight-semi-bold">Last Hour</p>
+			<div class="card-body rounded-lg text-black fs--1">
+				<h4 class="text-black mb-0">Average WTF Level</h4>
+				<p class="text-black font-weight-semi-bold">Last Day</p>
 				<canvas id="avgDialChart" class="max-w-100 chartjs-render-monitor" width="642" height="256" style="display: block; height: 128px; width: 321px;"></canvas>
 			</div>
 		</div>
@@ -125,8 +125,8 @@ func (tmpl *IndexTemplate) Render(ctx context.Context, w io.Writer) {
 				fill.addColorStop(0, 'rgba(255, 255, 255, 0.3)');
 				fill.addColorStop(1, 'rgba(255, 255, 255, 0)');
 
-				var tickFontColor = color('rgb(255,255,255)').alpha(0.7).rgbaString();
-				var gridLineColor = color('rgb(255,255,255)').alpha(0.1).rgbaString()
+				var tickFontColor = color('rgb(0,0,0)').alpha(0.7).rgbaString();
+				var gridLineColor = color('rgb(0,0,0)').alpha(0.1).rgbaString()
 
 				chart.chart = new Chart(ctx, {
 					type: 'line',
@@ -135,8 +135,8 @@ func (tmpl *IndexTemplate) Render(ctx context.Context, w io.Writer) {
 							label: 'WTF Level',
 							pointRadius: 2,
 							borderWidth: 2,
-							borderColor: color('rgb(255,255,255)').rgbaString(),
-							pointBackgroundColor: color('rgb(255,255,255)').rgbaString(),
+							borderColor: color('rgb(27,222,57)').rgbaString(),
+							pointBackgroundColor: color('rgb(27,255,57)').rgbaString(),
 							backgroundColor: fill,
 							lineTension: 0,
 							data: avgDialValues,
@@ -147,7 +147,7 @@ func (tmpl *IndexTemplate) Render(ctx context.Context, w io.Writer) {
 							duration: 0
 						},
 						legend: {
-							display: false
+							display: true
 						},
 						scales: {
 							xAxes: [{

@@ -154,12 +154,12 @@ func TestAuthService_DeleteAuth(t *testing.T) {
 		auth0, _ := MustCreateAuth(t, context.Background(), db, &wtf.Auth{
 			Source:      wtf.AuthSourceGitHub,
 			SourceID:    "X",
-			AccessToken: "X", User: &wtf.User{Name: "X"},
+			AccessToken: "X", User: &wtf.User{Name: "X", Email: "x@a.com"},
 		})
 		_, ctx1 := MustCreateAuth(t, context.Background(), db, &wtf.Auth{
 			Source:      wtf.AuthSourceGitHub,
 			SourceID:    "Y",
-			AccessToken: "Y", User: &wtf.User{Name: "Y"},
+			AccessToken: "Y", User: &wtf.User{Name: "Y", Email: "y@b.com"},
 		})
 
 		if err := s.DeleteAuth(ctx1, auth0.ID); err == nil {

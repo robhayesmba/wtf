@@ -23,7 +23,7 @@ const (
 //
 // See the EventService for more information about notifications.
 type Dial struct {
-	ID int `json:"id"`
+	ID int `json:"id" gorm:"primarykey"`
 
 	// Owner of the dial. Only the owner may delete the dial.
 	UserID int   `json:"userID"`
@@ -41,8 +41,8 @@ type Dial struct {
 	Value int `json:"value"`
 
 	// Timestamps for dial creation & last update.
-	CreatedAt time.Time `json:"createdAt"`
-	UpdatedAt time.Time `json:"updatedAt"`
+	CreatedAt time.Time `json:"createdAt" gorm:"type:time"`
+	UpdatedAt time.Time `json:"updatedAt" gorm:"type:time"`
 
 	// List of associated members and their contributing WTF level.
 	// This is only set when returning a single dial.

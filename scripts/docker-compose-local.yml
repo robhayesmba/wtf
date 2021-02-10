@@ -1,0 +1,25 @@
+version: '3'
+services:
+  flyway:
+    image: "flyway/flyway"
+    volumes:
+      - .:/flyway/sql
+    command: -url=jdbc:postgresql://db:5432/wtflpostgres -user=wtfadmin -password=wtf_password -connectRetries=5 migrate
+    depends_on:
+      - db
+    links:
+      - db
+  db:
+    image: "postgres:10-alpine"
+    container_name: wtf-postgres
+    ports:
+      - "3040:5432"
+    volumes:
+      - wtf-volume:/opt/wtflpostgres
+    environment:
+      - POSTGRES_USER=wtfadmin
+      - POSTGRES_PASSWORD=wtf_password
+      - POSTGRES_DB=wtflpostgres
+
+volumes:
+  wtf-volume:

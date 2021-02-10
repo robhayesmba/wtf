@@ -6,8 +6,9 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 	"io"
-	"strings"
 	"time"
 
 	"github.com/benbjohnson/wtf"
@@ -16,6 +17,29 @@ import (
 // DialService represents a service for managing dials.
 type DialService struct {
 	db *DB
+}
+
+type SqliteDial struct {
+	ID int `json:"id"`
+
+	// Owner of the dial. Only the owner may delete the dial.
+	UserID int       `json:"userID"`
+	User   *wtf.User `json:"user"`
+
+	// Human-readable name of the dial.
+	Name string `json:"name"`
+
+	// Code used to share the dial with other users.
+	// It allows the creation of a shareable link without explicitly inviting users.
+	InviteCode string `json:"inviteCode,omitempty"`
+
+	// Aggregate WTF level for the dial. This is a computed field based on the
+	// average value of each member's WTF level.
+	Value int `json:"value"`
+
+	// Timestamps for dial creation & last update.
+	CreatedAt string `json:"createdAt"`
+	UpdatedAt string `json:"updatedAt"`
 }
 
 // NewDialService returns a new instance of DialService.
@@ -31,7 +55,7 @@ func (s *DialService) FindDialByID(ctx context.Context, id int) (*wtf.Dial, erro
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback()
+	defer tx.Tx.Rollback()
 
 	// Fetch dial object and attach owner user.
 	dial, err := findDialByID(ctx, tx, id)
@@ -54,7 +78,7 @@ func (s *DialService) FindDials(ctx context.Context, filter wtf.DialFilter) ([]*
 	if err != nil {
 		return nil, 0, err
 	}
-	defer tx.Rollback()
+	defer tx.Tx.Rollback()
 
 	// Fetch list of matching dial objects.
 	dials, n, err := findDials(ctx, tx, filter)
@@ -79,7 +103,7 @@ func (s *DialService) CreateDial(ctx context.Context, dial *wtf.Dial) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer tx.Tx.Rollback()
 
 	// Assign dial to the current user.
 	// Return an error if the user is not currently logged in.
@@ -95,7 +119,7 @@ func (s *DialService) CreateDial(ctx context.Context, dial *wtf.Dial) error {
 	} else if err := attachDialAssociations(ctx, tx, dial); err != nil {
 		return err
 	}
-	return tx.Commit()
+	return tx.Tx.Commit().Error
 }
 
 // UpdateDial updates an existing dial by ID. Only the dial owner can update a dial.
@@ -108,7 +132,7 @@ func (s *DialService) UpdateDial(ctx context.Context, id int, upd wtf.DialUpdate
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback()
+	defer tx.Tx.Rollback()
 
 	// Update the dial object and attach associated user to returned dial.
 	dial, err := updateDial(ctx, tx, id, upd)
@@ -117,7 +141,7 @@ func (s *DialService) UpdateDial(ctx context.Context, id int, upd wtf.DialUpdate
 	} else if err := attachDialAssociations(ctx, tx, dial); err != nil {
 		return dial, err
 	}
-	return dial, tx.Commit()
+	return dial, tx.Tx.Commit().Error
 }
 
 // DeleteDial permanently removes a dial by ID. Only the dial owner may delete
@@ -128,12 +152,12 @@ func (s *DialService) DeleteDial(ctx context.Context, id int) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer tx.Tx.Rollback()
 
 	if err := deleteDial(ctx, tx, id); err != nil {
 		return err
 	}
-	return tx.Commit()
+	return tx.Tx.Commit().Error
 }
 
 // Sets the value of the user's membership in a dial. This works the same
@@ -146,7 +170,7 @@ func (s *DialService) SetDialMembershipValue(ctx context.Context, dialID, value 
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer tx.Tx.Rollback()
 
 	// Fetch current user.
 	userID := wtf.UserIDFromContext(ctx)
@@ -166,7 +190,7 @@ func (s *DialService) SetDialMembershipValue(ctx context.Context, dialID, value 
 	if _, err := updateDialMembership(ctx, tx, memberships[0].ID, wtf.DialMembershipUpdate{Value: &value}); err != nil {
 		return err
 	}
-	return tx.Commit()
+	return tx.Tx.Commit().Error
 }
 
 // DialValues returns a list of all stored historical values for a dial.
@@ -176,31 +200,37 @@ func (s *DialService) DialValues(ctx context.Context, id int) ([]int, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback()
+	defer tx.Tx.Rollback()
 
-	// Execute query to read all values in order for a dial.
-	rows, err := tx.QueryContext(ctx, `
-		SELECT value
-		FROM dial_values
-		WHERE dial_id = ?
-		ORDER BY "timestamp"
-	`, id)
-	if err != nil {
-		return nil, FormatError(err)
-	}
-
-	// Iterate over rows and append to list of values.
 	var a []int
-	for rows.Next() {
-		var v int
-		if err := rows.Scan(&v); err != nil {
-			return nil, FormatError(err)
-		}
-		a = append(a, v)
+	result := tx.Tx.Table("dial_values").Select("value").Where("dial_id = ?", id).Find(&a)
+	if result.Error != nil {
+		return nil, FormatError(result.Error)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, FormatError(err)
-	}
+
+	//// Execute query to read all values in order for a dial.
+	//rows, err := tx.QueryContext(ctx, `
+	//	SELECT value
+	//	FROM dial_values
+	//	WHERE dial_id = ?
+	//	ORDER BY "timestamp"
+	//`, id)
+	//if err != nil {
+	//	return nil, FormatError(err)
+	//}
+	//
+	//// Iterate over rows and append to list of values.
+	//var a []int
+	//for rows.Next() {
+	//	var v int
+	//	if err := rows.Scan(&v); err != nil {
+	//		return nil, FormatError(err)
+	//	}
+	//	a = append(a, v)
+	//}
+	//if err := rows.Err(); err != nil {
+	//	return nil, FormatError(err)
+	//}
 	return a, nil
 }
 
@@ -213,7 +243,7 @@ func (s *DialService) AverageDialValueReport(ctx context.Context, start, end tim
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback()
+	defer tx.Tx.Rollback()
 
 	// Ensure start/end line up with the interval unit.
 	start = start.Truncate(interval).UTC()
@@ -281,8 +311,9 @@ func findDialByID(ctx context.Context, tx *Tx, id int) (*wtf.Dial, error) {
 // otherwise we would just use those.
 func checkDialExists(ctx context.Context, tx *Tx, id int) error {
 	var n int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(1) FROM dials WHERE id = ?`, id).Scan(&n); err != nil {
-		return FormatError(err)
+	//if err := tx.QueryRowContext(ctx, `SELECT COUNT(1) FROM dials WHERE id = ?`, id).Scan(&n); err != nil {
+	if result := tx.Tx.Raw(`SELECT COUNT(1) FROM dials WHERE id = ?`, id).Scan(&n); result.Error != nil {
+		return FormatError(result.Error)
 	} else if n == 0 {
 		return &wtf.Error{Code: wtf.ENOTFOUND, Message: "Dial not found."}
 	}
@@ -294,67 +325,117 @@ func checkDialExists(ctx context.Context, tx *Tx, id int) error {
 func findDials(ctx context.Context, tx *Tx, filter wtf.DialFilter) (_ []*wtf.Dial, n int, err error) {
 	// Build WHERE clause. Each part of the WHERE clause is AND-ed together.
 	// Values are appended to an arg list to avoid SQL injection.
-	where, args := []string{"1 = 1"}, []interface{}{}
-	if v := filter.ID; v != nil {
-		where, args = append(where, "id = ?"), append(args, *v)
-	}
+	//where, args := []string{"1 = 1"}, []interface{}{}
+	//if v := filter.ID; v != nil {
+	//	where, args = append(where, "id = ?"), append(args, *v)
+	//}
+	//
+	//// Limit to dials user is a member of unless searching by invite code.
+	//if v := filter.InviteCode; v != nil {
+	//	where, args = append(where, "invite_code = ?"), append(args, *v)
+	//} else {
+	//	userID := wtf.UserIDFromContext(ctx)
+	//	where = append(where, `(
+	//		id IN (SELECT dial_id FROM dial_memberships dm WHERE dm.user_id = ?)
+	//	)`)
+	//	args = append(args, userID)
+	//}
 
-	// Limit to dials user is a member of unless searching by invite code.
-	if v := filter.InviteCode; v != nil {
-		where, args = append(where, "invite_code = ?"), append(args, *v)
+	subQuery := tx.Tx.Select("dial_id").Where("user_id = ?", wtf.UserIDFromContext(ctx)).Table("dial_memberships")
+	useSubQuery := false
+	whereMap := make(map[string]interface{})
+	if filter.ID != nil {
+		whereMap["id"] = filter.ID
+	}
+	if filter.InviteCode != nil {
+		whereMap["invite_code"] = filter.InviteCode
 	} else {
-		userID := wtf.UserIDFromContext(ctx)
-		where = append(where, `(
-			id IN (SELECT dial_id FROM dial_memberships dm WHERE dm.user_id = ?)
-		)`)
-		args = append(args, userID)
+		useSubQuery = true
 	}
 
-	// Execue query with limiting WHERE clause and LIMIT/OFFSET injected.
-	rows, err := tx.QueryContext(ctx, `
-		SELECT 
-		    id,
-		    user_id,
-		    name,
-		    value,
-		    invite_code,
-		    created_at,
-		    updated_at,
-		    COUNT(*) OVER()
-		FROM dials
-		WHERE `+strings.Join(where, " AND ")+`
-		ORDER BY id ASC
-		`+FormatLimitOffset(filter.Limit, filter.Offset),
-		args...,
-	)
-	if err != nil {
-		return nil, n, FormatError(err)
-	}
-	defer rows.Close()
-
-	// Iterate over rows and deserialize into Dial objects.
-	dials := make([]*wtf.Dial, 0)
-	for rows.Next() {
-		var dial wtf.Dial
-		if rows.Scan(
-			&dial.ID,
-			&dial.UserID,
-			&dial.Name,
-			&dial.Value,
-			&dial.InviteCode,
-			(*NullTime)(&dial.CreatedAt),
-			(*NullTime)(&dial.UpdatedAt),
-			&n,
-		); err != nil {
-			return nil, 0, err
+	if tx.db.DBType == "sqlite" {
+		var readDials []*SqliteDial
+		var results *gorm.DB
+		if useSubQuery {
+			results = tx.Tx.Table("dials").Where(whereMap).Where("id IN (?)", subQuery).Find(&readDials)
+		} else {
+			results = tx.Tx.Table("dials").Where(whereMap).Find(&readDials)
 		}
-		dials = append(dials, &dial)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, 0, err
+		if results.Error != nil {
+			return nil, 0, FormatError(results.Error)
+		}
+
+		dials := make([]*wtf.Dial, 0)
+		count := 0
+		for _, dial := range readDials {
+			d, err := mapFromDBDial(dial)
+			if err != nil {
+				return nil, 0, FormatError(err)
+			}
+			dials = append(dials, d)
+			count++
+		}
+		return dials, count, nil
+	} else {
+		var dials []*wtf.Dial
+		var results *gorm.DB
+		if useSubQuery {
+			results = tx.Tx.Where(whereMap).Where("id IN (?)", subQuery).Find(&dials)
+		} else {
+			results = tx.Tx.Where(whereMap).Find(&dials)
+		}
+		if results.Error != nil {
+			return nil, 0, FormatError(results.Error)
+		}
+
+		return dials, int(results.RowsAffected), nil
 	}
 
-	return dials, n, nil
+	// Execute query with limiting WHERE clause and LIMIT/OFFSET injected.
+	//rows, err := tx.QueryContext(ctx, `
+	//	SELECT
+	//	    id,
+	//	    user_id,
+	//	    name,
+	//	    value,
+	//	    invite_code,
+	//	    created_at,
+	//	    updated_at,
+	//	    COUNT(*) OVER()
+	//	FROM dials
+	//	WHERE `+strings.Join(where, " AND ")+`
+	//	ORDER BY id ASC
+	//	`+FormatLimitOffset(filter.Limit, filter.Offset),
+	//	args...,
+	//)
+	//if err != nil {
+	//	return nil, n, FormatError(err)
+	//}
+	//defer rows.Close()
+	//
+	//// Iterate over rows and deserialize into Dial objects.
+	//dials := make([]*wtf.Dial, 0)
+	//for rows.Next() {
+	//	var dial wtf.Dial
+	//	if rows.Scan(
+	//		&dial.ID,
+	//		&dial.UserID,
+	//		&dial.Name,
+	//		&dial.Value,
+	//		&dial.InviteCode,
+	//		(*NullTime)(&dial.CreatedAt),
+	//		(*NullTime)(&dial.UpdatedAt),
+	//		&n,
+	//	); err != nil {
+	//		return nil, 0, err
+	//	}
+	//	dials = append(dials, &dial)
+	//}
+	//if err := rows.Err(); err != nil {
+	//	return nil, 0, err
+	//}
+
+	//return dials, n, nil
 }
 
 // createDial creates a new dial.
@@ -367,8 +448,10 @@ func createDial(ctx context.Context, tx *Tx, dial *wtf.Dial) error {
 	dial.InviteCode = hex.EncodeToString(inviteCode)
 
 	// Set timestamps to current time.
-	dial.CreatedAt = tx.now
-	dial.UpdatedAt = dial.CreatedAt
+	if tx.db.DBType == "sqlite" {
+		dial.CreatedAt = tx.now
+		dial.UpdatedAt = dial.CreatedAt
+	}
 
 	// Perform basic field validation.
 	if err := dial.Validate(); err != nil {
@@ -376,34 +459,51 @@ func createDial(ctx context.Context, tx *Tx, dial *wtf.Dial) error {
 	}
 
 	// Insert row into database.
-	result, err := tx.ExecContext(ctx, `
-		INSERT INTO dials (
-			user_id,
-			name,
-			invite_code,
-			created_at,
-			updated_at
-		)
-		VALUES (?, ?, ?, ?, ?)
-	`,
-		dial.UserID,
-		dial.Name,
-		dial.InviteCode,
-		(*NullTime)(&dial.CreatedAt),
-		(*NullTime)(&dial.UpdatedAt),
-	)
-	if err != nil {
-		return FormatError(err)
-	}
+	//result, err := tx.ExecContext(ctx, `
+	//	INSERT INTO dials (
+	//		user_id,
+	//		name,
+	//		invite_code,
+	//		created_at,
+	//		updated_at
+	//	)
+	//	VALUES (?, ?, ?, ?, ?)
+	//`,
+	//	dial.UserID,
+	//	dial.Name,
+	//	dial.InviteCode,
+	//	(*NullTime)(&dial.CreatedAt),
+	//	(*NullTime)(&dial.UpdatedAt),
+	//)
+	//if err != nil {
+	//	return FormatError(err)
+	//}
+	//
+	//// Read back new dial ID into caller argument.
+	//if dial.ID, err = lastInsertID(result); err != nil {
+	//	return err
+	//}
 
-	// Read back new dial ID into caller argument.
-	if dial.ID, err = lastInsertID(result); err != nil {
-		return err
-	}
-
-	// Record initial value to history table.
-	if err := insertDialValue(ctx, tx, dial.ID, dial.Value, dial.CreatedAt); err != nil {
-		return fmt.Errorf("insert initial value: %w", err)
+	if tx.db.DBType == "sqlite" {
+		crDial := mapToDBDial(dial)
+		result := tx.Tx.Table("dials").Create(&crDial)
+		if result.Error != nil {
+			return FormatError(result.Error)
+		}
+		dial.ID = crDial.ID
+		// Record initial value to history table.
+		if err := insertDialValue(ctx, tx, dial.ID, dial.Value, dial.CreatedAt); err != nil {
+			return fmt.Errorf("insert initial value: %w", err)
+		}
+	} else {
+		result := tx.Tx.Create(&dial)
+		if result.Error != nil {
+			return FormatError(result.Error)
+		}
+		// Record initial value to history table.
+		if err := insertDialValue(ctx, tx, dial.ID, dial.Value, time.Now().UTC()); err != nil {
+			return fmt.Errorf("insert initial value: %v", err)
+		}
 	}
 
 	// Create self membership automatically.
@@ -431,28 +531,45 @@ func updateDial(ctx context.Context, tx *Tx, id int, upd wtf.DialUpdate) (*wtf.D
 	if v := upd.Name; v != nil {
 		dial.Name = *v
 	}
-	dial.UpdatedAt = tx.now
+	if tx.db.DBType == "sqlite" {
+		dial.UpdatedAt = tx.now
+	}
 
 	// Perform basic field validation.
 	if err := dial.Validate(); err != nil {
 		return dial, err
 	}
 
-	// Execute update query.
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE dials
-		SET name = ?,
-		    updated_at = ?
-		WHERE id = ?
-	`,
-		dial.Name,
-		(*NullTime)(&dial.UpdatedAt),
-		id,
-	); err != nil {
-		return dial, FormatError(err)
+	if tx.db.DBType == "sqlite" {
+		upDial := mapToDBDial(dial)
+		result := tx.Tx.Table("dials").Updates(&upDial)
+		if result.Error != nil {
+			return dial, FormatError(result.Error)
+		}
+	} else {
+		result := tx.Tx.Updates(&dial)
+		if result.Error != nil {
+			return dial, FormatError(result.Error)
+		}
 	}
 
 	return dial, nil
+
+	//// Execute update query.
+	//if _, err := tx.ExecContext(ctx, `
+	//	UPDATE dials
+	//	SET name = ?,
+	//	    updated_at = ?
+	//	WHERE id = ?
+	//`,
+	//	dial.Name,
+	//	(*NullTime)(&dial.UpdatedAt),
+	//	id,
+	//); err != nil {
+	//	return dial, FormatError(err)
+	//}
+	//
+	//return dial, nil
 }
 
 // deleteDial permanently deletes a dial by ID. Returns EUNAUTHORIZED if user
@@ -465,35 +582,55 @@ func deleteDial(ctx context.Context, tx *Tx, id int) error {
 		return wtf.Errorf(wtf.EUNAUTHORIZED, "Only the owner can delete a dial.")
 	}
 
-	// Remove row from database.
-	if _, err := tx.ExecContext(ctx, `DELETE FROM dials WHERE id = ?`, id); err != nil {
-		return FormatError(err)
+	result := tx.Tx.Delete(&wtf.Dial{}, id)
+	if result.Error != nil {
+		return FormatError(result.Error)
 	}
+
 	return nil
+	// Remove row from database.
+	//if _, err := tx.ExecContext(ctx, `DELETE FROM dials WHERE id = ?`, id); err != nil {
+	//	return FormatError(err)
+	//}
+	//return nil
 }
 
 // refreshDialValue recomputes the WTF level of a dial by ID and saves it in dials.value.
 func refreshDialValue(ctx context.Context, tx *Tx, id int) error {
 	// Fetch current dial value.
 	var oldValue int
-	if err := tx.QueryRowContext(ctx, `SELECT value FROM dials WHERE id = ? `, id).Scan(&oldValue); err == sql.ErrNoRows {
-		return nil // no dial, skip
-	} else if err != nil {
-		return FormatError(err)
+	result := tx.Tx.Model(&wtf.Dial{}).Where("id = ?", id).Select("value").Scan(&oldValue)
+	if result.Error == sql.ErrNoRows {
+		return nil
+	} else if result.Error != nil {
+		return FormatError(result.Error)
 	}
+	//if err := tx.QueryRowContext(ctx, `SELECT value FROM dials WHERE id = ? `, id).Scan(&oldValue); err == sql.ErrNoRows {
+	//	return nil // no dial, skip
+	//} else if err != nil {
+	//	return FormatError(err)
+	//}
 
 	// Compute average value from dial memberships.
-	var newValue int
-	if err := tx.QueryRowContext(ctx, `
+
+	var sqlStmt string
+	if tx.db.DBType == "sqlite" {
+		sqlStmt = `
 		SELECT CAST(ROUND(IFNULL(AVG(value), 0)) AS INTEGER)
-		FROM dial_memberships
-		WHERE dial_id = ?
-	`,
+		FROM dial_memberships`
+	} else {
+		sqlStmt = `
+		SELECT CAST(ROUND(COALESCE(AVG(value), 0)) AS INTEGER)
+		FROM dial_memberships`
+	}
+
+	var newValue int
+	if result := tx.Tx.Raw(sqlStmt,
 		id,
 	).Scan(
 		&newValue,
-	); err != nil && err != sql.ErrNoRows {
-		return FormatError(err)
+	); result.Error != nil && result.Error != sql.ErrNoRows {
+		return FormatError(result.Error)
 	}
 
 	// Exit if the value will not change.
@@ -501,23 +638,34 @@ func refreshDialValue(ctx context.Context, tx *Tx, id int) error {
 		return nil
 	}
 
-	// Update value on dial.
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE dials
-		SET value = ?,
-		    updated_at = ?
-		WHERE id = ?
-	`,
-		newValue,
-		(*NullTime)(&tx.now),
-		id,
-	); err != nil {
-		return FormatError(err)
+	result2 := tx.Tx.Model(&wtf.Dial{}).Where("id = ?", id).Update("value", newValue)
+	if result2.Error != nil {
+		return FormatError(result2.Error)
 	}
 
-	// Record historical value into "dial_values" table.
-	if err := insertDialValue(ctx, tx, id, newValue, tx.now); err != nil {
-		return fmt.Errorf("insert historical value: %w", err)
+	// Update value on dial.
+	//if _, err := tx.ExecContext(ctx, `
+	//	UPDATE dials
+	//	SET value = ?,
+	//	    updated_at = ?
+	//	WHERE id = ?
+	//`,
+	//	newValue,
+	//	(*NullTime)(&tx.now),
+	//	id,
+	//); err != nil {
+	//	return FormatError(err)
+	//}
+
+	if tx.db.DBType == "sqlite" {
+		// Record historical value into "dial_values" table.
+		if err := insertDialValue(ctx, tx, id, newValue, tx.now); err != nil {
+			return fmt.Errorf("insert historical value: %w", err)
+		}
+	} else {
+		if err := insertDialValue(ctx, tx, id, newValue, time.Now().UTC()); err != nil {
+			return fmt.Errorf("insert historical value: %w", err)
+		}
 	}
 
 	// Publish event to notify other members that the value has changed.
@@ -540,16 +688,31 @@ func insertDialValue(ctx context.Context, tx *Tx, id int, value int, timestamp t
 	timestamp = timestamp.Truncate(1 * time.Minute)
 
 	// Insert a new record or update an existing record for the dial at the given timestamp.
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO dial_values (dial_id, "timestamp", value)
-		VALUES (?, ?, ?)
-		ON CONFLICT (dial_id, "timestamp") DO UPDATE SET value = ?
-	`,
-		id, (*NullTime)(&timestamp), value, value,
-	); err != nil {
-		return FormatError(err)
+	result := tx.Tx.Table("dial_values").Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "dial_id"}, {Name: "timestamp"}},
+		DoUpdates: clause.Assignments(map[string]interface{}{"value": value}),
+	}).Create(map[string]interface{}{
+		"dial_id":   id,
+		"timestamp": timestamp,
+		"value":     value,
+	})
+
+	if result.Error != nil {
+		return FormatError(result.Error)
 	}
+
 	return nil
+	//
+	//if _, err := tx.ExecContext(ctx, `
+	//	INSERT INTO dial_values (dial_id, "timestamp", value)
+	//	VALUES (?, ?, ?)
+	//	ON CONFLICT (dial_id, "timestamp") DO UPDATE SET value = ?
+	//`,
+	//	id, (*NullTime)(&timestamp), value, value,
+	//); err != nil {
+	//	return FormatError(err)
+	//}
+	//return nil
 }
 
 // findDialValueSlotsBetween returns the value of a dial at given intervals in a time range.
@@ -572,55 +735,72 @@ func findDialValueSlotsBetween(ctx context.Context, tx *Tx, id int, start, end t
 
 	// Determine initial value at start of report time range.
 	var value int
-	if err := tx.QueryRowContext(ctx, `
-		SELECT value
-		FROM dial_values
-		WHERE dial_id = ?
-		  AND "timestamp" <= ?
-		ORDER BY "timestamp" DESC
-		LIMIT 1
-		`,
-		id,
-		(*NullTime)(&start),
-	).Scan(
-		&value,
-	); err != nil && err != sql.ErrNoRows {
-		return nil, err
+	result := tx.Tx.Table("dial_values").Where("dial_id = ? AND timestamp <= ?", id, (*NullTime)(&start)).Limit(1).Select("value").Scan(&value)
+	if result.Error != nil {
+		return nil, FormatError(result.Error)
 	}
+
+	//if err := tx.QueryRowContext(ctx, `
+	//	SELECT value
+	//	FROM dial_values
+	//	WHERE dial_id = ?
+	//	  AND "timestamp" <= ?
+	//	ORDER BY "timestamp" DESC
+	//	LIMIT 1
+	//	`,
+	//	id,
+	//	(*NullTime)(&start),
+	//).Scan(
+	//	&value,
+	//); err != nil && err != sql.ErrNoRows {
+	//	return nil, err
+	//}
 	values[0] = value
 
 	// Find all values between start & end.
-	rows, err := tx.QueryContext(ctx, `
-		SELECT value, "timestamp"
-		FROM dial_values
-		WHERE dial_id = ?
-		  AND "timestamp" >= ?
-		  AND "timestamp" < ?
-		ORDER BY "timestamp" ASC
-	`,
-		id,
-		(*NullTime)(&start),
-		(*NullTime)(&end),
-	)
-	if err != nil {
-		return nil, FormatError(err)
+	var rangeValues []*wtf.DialValueRecord
+
+	result2 := tx.Tx.Table("dial_values").Where("dial_id = ? AND timestamp >= ? AND timestamp < ?", id, (*NullTime)(&start), (*NullTime)(&end)).Scan(&rangeValues)
+	if result2.Error != nil {
+		return nil, FormatError(result2.Error)
 	}
-	defer rows.Close()
+
+	//rows, err := tx.QueryContext(ctx, `
+	//	SELECT value, "timestamp"
+	//	FROM dial_values
+	//	WHERE dial_id = ?
+	//	  AND "timestamp" >= ?
+	//	  AND "timestamp" < ?
+	//	ORDER BY "timestamp" ASC
+	//`,
+	//	id,
+	//	(*NullTime)(&start),
+	//	(*NullTime)(&end),
+	//)
+	//if err != nil {
+	//	return nil, FormatError(err)
+	//}
+	//defer rows.Close()
 
 	// Iterate over rows and assign values to slots.
-	for rows.Next() {
-		var timestamp time.Time
-		if rows.Scan(&value, (*NullTime)(&timestamp)); err != nil {
-			return nil, err
-		}
+	//for rows.Next() {
+	//	var timestamp time.Time
+	//	if rows.Scan(&value, (*NullTime)(&timestamp)); err != nil {
+	//		return nil, err
+	//	}
+	//
+	//	i := int(timestamp.Sub(start) / interval)
+	//	values[i] = value
+	//}
+	//if err := rows.Err(); err != nil {
+	//	return nil, err
+	//} else if err := rows.Close(); err != nil {
+	//	return nil, err
+	//}
 
-		i := int(timestamp.Sub(start) / interval)
-		values[i] = value
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	} else if err := rows.Close(); err != nil {
-		return nil, err
+	for _, value := range rangeValues {
+		i := int(value.Timestamp.Sub(start) / interval)
+		values[i] = value.Value
 	}
 
 	// Iterate over values to fill empty slots.
@@ -639,25 +819,37 @@ func findDialValueSlotsBetween(ctx context.Context, tx *Tx, id int, start, end t
 // publishDialEvent publishes event to the dial members.
 func publishDialEvent(ctx context.Context, tx *Tx, id int, event wtf.Event) error {
 	// Find all users who are members of the dial.
-	rows, err := tx.QueryContext(ctx, `SELECT user_id FROM dial_memberships WHERE dial_id = ?`, id)
-	if err != nil {
-		return FormatError(err)
+	var userIDs []int
+	result := tx.Tx.Model(&wtf.DialMembership{}).Where("dial_id = ?", id).Select("user_id").Find(&userIDs)
+	if result.Error != nil {
+		return FormatError(result.Error)
 	}
-	defer rows.Close()
 
-	// Iterate over users and publish event.
-	for rows.Next() {
-		var userID int
-		if err := rows.Scan(&userID); err != nil {
-			return err
-		}
+	for _, userID := range userIDs {
 		tx.db.EventService.PublishEvent(userID, event)
 	}
 
-	if err := rows.Err(); err != nil {
-		return err
-	}
 	return nil
+
+	//rows, err := tx.QueryContext(ctx, `SELECT user_id FROM dial_memberships WHERE dial_id = ?`, id)
+	//if err != nil {
+	//	return FormatError(err)
+	//}
+	//defer rows.Close()
+	//
+	//// Iterate over users and publish event.
+	//for rows.Next() {
+	//	var userID int
+	//	if err := rows.Scan(&userID); err != nil {
+	//		return err
+	//	}
+	//	tx.db.EventService.PublishEvent(userID, event)
+	//}
+	//
+	//if err := rows.Err(); err != nil {
+	//	return err
+	//}
+	//return nil
 }
 
 // attachDialAssociations is a helper function to look up and attach the owner user to the dial.
@@ -666,4 +858,40 @@ func attachDialAssociations(ctx context.Context, tx *Tx, dial *wtf.Dial) (err er
 		return fmt.Errorf("attach dial user: %w", err)
 	}
 	return nil
+}
+
+func mapFromDBDial(dial *SqliteDial) (*wtf.Dial, error) {
+	var d wtf.Dial
+	d.ID = dial.ID
+	d.UserID = dial.UserID
+	d.User = dial.User
+	d.Name = dial.Name
+	d.InviteCode = dial.InviteCode
+	d.Value = dial.Value
+	ct, err := time.Parse(TimeLayout, dial.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	d.CreatedAt = ct.UTC().Truncate(time.Second)
+	ut, err := time.Parse(TimeLayout, dial.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	d.UpdatedAt = ut.UTC().Truncate(time.Second)
+
+	return &d, nil
+}
+
+func mapToDBDial(dial *wtf.Dial) SqliteDial {
+	var d SqliteDial
+	d.ID = dial.ID
+	d.UserID = dial.UserID
+	d.User = dial.User
+	d.Name = dial.Name
+	d.InviteCode = dial.InviteCode
+	d.Value = dial.Value
+	d.CreatedAt = dial.CreatedAt.Format(TimeLayout)
+	d.UpdatedAt = dial.UpdatedAt.Format(TimeLayout)
+
+	return d
 }

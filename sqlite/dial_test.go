@@ -229,8 +229,8 @@ func TestDialService_AverageDialValueReport(t *testing.T) {
 		}
 
 		ctx := context.Background()
-		_, ctx0 := MustCreateUser(t, ctx, db, &wtf.User{Name: "jane"})
-		_, ctx1 := MustCreateUser(t, ctx, db, &wtf.User{Name: "joe"})
+		_, ctx0 := MustCreateUser(t, ctx, db, &wtf.User{Name: "jane", Email: "jane@jane.co"})
+		_, ctx1 := MustCreateUser(t, ctx, db, &wtf.User{Name: "joe", Email: "joe@joe.co"})
 
 		dial0 := MustCreateDial(t, ctx0, db, &wtf.Dial{Name: "DIAL0"})
 		membership0 := MustFindDialMembershipByID(t, ctx0, db, 1)
